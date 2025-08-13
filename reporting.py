@@ -1,11 +1,13 @@
-# reporting.py
-from typing import Dict
+from typing import Dict, List
 import pandas as pd
 from config import Config
 
-def write_signals_daily(tickers: list,
+def _descend(x):
+    return x.sort_index(ascending=False)
+
+def write_signals_daily(tickers: List[str],
                         features: Dict[str, pd.DataFrame],
-                        trend_daily: pd.Series,
+                        trend: Dict[str, pd.DataFrame],
                         emergent_daily: pd.Series,
                         emergent_ttl_daily: pd.Series,
                         stars_daily: pd.Series,
@@ -13,62 +15,42 @@ def write_signals_daily(tickers: list,
                         cfg: Config) -> None:
     last = features["RS_pct"].index[-1]
 
-    # valuation warning only (no gating)
     def _val_warn(row_val: pd.Series) -> pd.Series:
         out = pd.Series("None", index=row_val.index, dtype=object)
         out[row_val >= cfg.VAL_RICH_WARN_PCT] = "Rich"
         out[row_val <= cfg.VAL_CHEAP_WARN_PCT] = "Cheap"
         return out
 
-    # emergent reason code (for audit/readability)
-    def _emergent_reason(label: pd.Series) -> pd.Series:
-        out = pd.Series("", index=label.index, dtype=object)
-        out[label == "Inflection"] = "Crossover"
-        out[label == "Breakdown"] = "Accel"
-        return out
-
-    row_RS = features["RS_pct"].loc[last, tickers]
-    row_accel = features["Accel_pct"].loc[last, tickers]
-    row_adxroc = features["ADX_ROC"].loc[last, tickers]
-    row_val = features["Val_pct"].loc[last, tickers]
+    row_RS      = features["RS_pct"].loc[last, tickers]
+    row_accel   = features["Accel_pct"].loc[last, tickers]
+    row_adxroc  = features["ADX_ROC"].loc[last, tickers]
+    row_val     = features["Val_pct"].loc[last, tickers]
     row_val_warn = _val_warn(row_val)
+
+    tstat_row   = trend["Tstat"].loc[last, tickers]
+    slope_row   = trend["Slope"].loc[last, tickers]
+    score_row   = trend["Score"].loc[last, tickers]
+    class_row   = trend["Class"].loc[last, tickers]
 
     df = pd.DataFrame({
         "Ticker": tickers,
         "RS_pct": row_RS.values,
-        "Onside_Tilt": trend_daily.reindex(tickers).fillna("None").values,
+        "Trend_Tstat": tstat_row.values,
+        "Trend_Slope": slope_row.values,
+        "OnsideScore": score_row.values,   # t-stat percentile (0..1)
+        "Trend_Class": class_row.values,   # Onside / Monitor / Offside
         "Accel_pct": row_accel.values,
         "ADX_ROC": row_adxroc.values,
         "Emergent": emergent_daily.reindex(tickers).fillna("").values,
-        "Emergent_Reason": _emergent_reason(emergent_daily.reindex(tickers).fillna("")),
         "Emergent_TTL_Rem": emergent_ttl_daily.reindex(tickers).fillna(0).astype(int).values,
         "Star": stars_daily.reindex(tickers).fillna("").values,
-        "Val_pct": row_val.values,                 # stays 0–1
-        "Valuation_Warn": row_val_warn.values,     # "Rich" / "Cheap" / "None"
-        "Overstretched_Warn": _overstretched_warn_row(features, cfg, last, tickers),
+        "Val_pct": row_val.values,
+        "Valuation_Warn": row_val_warn.values,
         "Unpredictable": unpredictable.reindex(tickers).fillna(False).astype(bool).values,
     })
 
     with pd.ExcelWriter(cfg.OUTPUT_SIGNALS_PATH, engine="openpyxl") as xw:
         df.to_excel(xw, index=False, sheet_name="Signals")
-
-def _overstretched_warn_row(features: Dict[str, pd.DataFrame], cfg: Config, last, tickers) -> list:
-    RS_pct = features["RS_pct"].loc[last, tickers]
-    ADX_ROC = features["ADX_ROC"].loc[last, tickers]
-    Val_pct = features["Val_pct"].loc[last, tickers]
-
-    long_warn = (RS_pct >= cfg.RS_LONG_EXTREME_PCT) & (ADX_ROC <= 0) & (Val_pct >= cfg.VAL_RICH_WARN_PCT)
-    short_warn = (RS_pct <= cfg.RS_SHORT_EXTREME_PCT) & (ADX_ROC <= 0) & (Val_pct <= cfg.VAL_CHEAP_WARN_PCT)
-
-    out = []
-    for i in range(len(tickers)):
-        if bool(long_warn.iloc[i]):
-            out.append("Long")
-        elif bool(short_warn.iloc[i]):
-            out.append("Short")
-        else:
-            out.append("None")
-    return out
 
 def write_backtests_summary(bt: Dict[str, Dict[str, object]], cfg: Config) -> None:
     with pd.ExcelWriter(cfg.OUTPUT_BACKTESTS_PATH, engine="openpyxl") as xw:

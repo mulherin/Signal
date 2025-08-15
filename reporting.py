@@ -1,9 +1,7 @@
+# reporting.py
 from typing import Dict, List
 import pandas as pd
 from config import Config
-
-def _descend(x):
-    return x.sort_index(ascending=False)
 
 def write_signals_daily(tickers: List[str],
                         features: Dict[str, pd.DataFrame],
@@ -12,7 +10,9 @@ def write_signals_daily(tickers: List[str],
                         emergent_ttl_daily: pd.Series,
                         stars_daily: pd.Series,
                         unpredictable: pd.Series,
-                        cfg: Config) -> None:
+                        cfg: Config,
+                        emergent_age_daily: pd.Series = None) -> None:   # NEW arg (optional)
+
     last = features["RS_pct"].index[-1]
 
     def _val_warn(row_val: pd.Series) -> pd.Series:
@@ -37,12 +37,13 @@ def write_signals_daily(tickers: List[str],
         "RS_pct": row_RS.values,
         "Trend_Tstat": tstat_row.values,
         "Trend_Slope": slope_row.values,
-        "OnsideScore": score_row.values,   # t-stat percentile (0..1)
-        "Trend_Class": class_row.values,   # Onside / Monitor / Offside
+        "OnsideScore": score_row.values,
+        "Trend_Class": class_row.values,
         "Accel_pct": row_accel.values,
         "ADX_ROC": row_adxroc.values,
         "Emergent": emergent_daily.reindex(tickers).fillna("").values,
         "Emergent_TTL_Rem": emergent_ttl_daily.reindex(tickers).fillna(0).astype(int).values,
+        "Emergent_Age_D": emergent_age_daily.reindex(tickers).fillna(0).astype(int).values if emergent_age_daily is not None else 0,
         "Star": stars_daily.reindex(tickers).fillna("").values,
         "Val_pct": row_val.values,
         "Valuation_Warn": row_val_warn.values,
@@ -52,12 +53,20 @@ def write_signals_daily(tickers: List[str],
     with pd.ExcelWriter(cfg.OUTPUT_SIGNALS_PATH, engine="openpyxl") as xw:
         df.to_excel(xw, index=False, sheet_name="Signals")
 
+from typing import Dict
+import pandas as pd
+from config import Config
+
 def write_backtests_summary(bt: Dict[str, Dict[str, object]], cfg: Config) -> None:
+    """
+    Write one sheet per strategy for equity and stats into OUTPUT_BACKTESTS_PATH.
+    Expected 'bt' structure: { name: {"Equity": Series, "Stats": dict}, ... }
+    """
     with pd.ExcelWriter(cfg.OUTPUT_BACKTESTS_PATH, engine="openpyxl") as xw:
         for name, d in bt.items():
             eq = d.get("Equity", pd.Series(dtype=float))
             st = d.get("Stats", {})
-            if not eq.empty:
+            if isinstance(eq, pd.Series) and not eq.empty:
                 eq.to_frame(name="Equity").to_excel(xw, sheet_name=f"{name}_Equity")
-            if st:
+            if isinstance(st, dict) and st:
                 pd.DataFrame([st]).to_excel(xw, sheet_name=f"{name}_Stats", index=False)

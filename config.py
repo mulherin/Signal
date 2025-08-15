@@ -33,6 +33,15 @@ class Config:
     ACCEL_DELTA_MIN: float
     EMERGENT_LONG_CROSS_MARGIN: float
     EMERGENT_SHORT_CROSS_MARGIN: float
+        # Emergent stop (overlay)
+    EMERGENT_STOP_MAX_AGE_D: int
+    EMERGENT_STOP_MIN_LIFT: float
+    EMERGENT_STOP_MAX_DD: float
+    EMERGENT_STOP_COOLDOWN_D: int
+    # Emergent stop logging
+    EMERGENT_STOP_LOG: bool
+    EMERGENT_STOP_LOG_EVERY_D: int
+
 
     # ADX (kept for compatibility; not used in emergent v2)
     EMERGENT_ADX_ROC_PCTL_MIN: float
@@ -69,6 +78,15 @@ class Config:
     STAR_LOOKBACK_D: int
     STAR_RS_THRESH_PCT: float
     STAR_SUSTAIN_FRAC: float
+    STAR_REBALANCE_FREQ_D: int
+    STAR_LONG_BUDGET: float
+    STAR_SHORT_BUDGET: float
+    # Optional logging
+    TREND_LOG: bool
+    TREND_LOG_EVERY_D: int
+    STAR_LOG: bool
+    STAR_LOG_EVERY_D: int
+
 
     # ---------------- Unpredictable (unchanged) ----------------
     UNPRED_CORR_MAX: float
@@ -199,10 +217,29 @@ def load_config(trend_input_path: Optional[Path] = None) -> Config:
     EMERGENT_LOG = _coerce_bool(raw.get("EMERGENT_LOG", False))
     EMERGENT_LOG_EVERY_D = _coerce_int(raw.get("EMERGENT_LOG_EVERY_D", 21), 21)
 
+    EMERGENT_STOP_MAX_AGE_D   = _coerce_int(raw.get("EMERGENT_STOP_MAX_AGE_D", 15), 15)
+    EMERGENT_STOP_MIN_LIFT    = _coerce_float(raw.get("EMERGENT_STOP_MIN_LIFT", 0.02), 0.02)
+    EMERGENT_STOP_MAX_DD      = _coerce_float(raw.get("EMERGENT_STOP_MAX_DD", 0.03), 0.03)
+    EMERGENT_STOP_COOLDOWN_D  = _coerce_int(raw.get("EMERGENT_STOP_COOLDOWN_D", 10), 10)
+
+    EMERGENT_STOP_LOG         = _coerce_bool(raw.get("EMERGENT_STOP_LOG", False))
+    EMERGENT_STOP_LOG_EVERY_D = _coerce_int(raw.get("EMERGENT_STOP_LOG_EVERY_D", 21), 21)
+
+
     # Stars (unchanged)
     STAR_LOOKBACK_D = _coerce_int(raw.get("STAR_LOOKBACK_D", 252), 252)
     STAR_RS_THRESH_PCT = _coerce_float(raw.get("STAR_RS_THRESH_PCT", 0.70), 0.70)
     STAR_SUSTAIN_FRAC = _coerce_float(raw.get("STAR_SUSTAIN_FRAC", 0.70), 0.70)
+    STAR_REBALANCE_FREQ_D = _coerce_int(raw.get("STAR_REBALANCE_FREQ_D", 5), 5)
+    STAR_LONG_BUDGET = _coerce_float(raw.get("STAR_LONG_BUDGET", 0.5), 0.5)
+    STAR_SHORT_BUDGET = _coerce_float(raw.get("STAR_SHORT_BUDGET", 0.5), 0.5)
+    # Trend/Stars logging toggles
+    TREND_LOG = _coerce_bool(raw.get("TREND_LOG", False))
+    TREND_LOG_EVERY_D = _coerce_int(raw.get("TREND_LOG_EVERY_D", 21), 21)
+    STAR_LOG = _coerce_bool(raw.get("STAR_LOG", False))
+    STAR_LOG_EVERY_D = _coerce_int(raw.get("STAR_LOG_EVERY_D", 21), 21)
+
+
 
     # Unpredictable (unchanged)
     UNPRED_CORR_MAX = _coerce_float(raw.get("UNPRED_CORR_MAX", 0.05), 0.05)
@@ -256,9 +293,22 @@ def load_config(trend_input_path: Optional[Path] = None) -> Config:
         EMERGENT_SHORT_BUDGET=EMERGENT_SHORT_BUDGET,
         EMERGENT_LOG=EMERGENT_LOG,
         EMERGENT_LOG_EVERY_D=EMERGENT_LOG_EVERY_D,
+        EMERGENT_STOP_MAX_AGE_D=EMERGENT_STOP_MAX_AGE_D,
+        EMERGENT_STOP_MIN_LIFT=EMERGENT_STOP_MIN_LIFT,
+        EMERGENT_STOP_MAX_DD=EMERGENT_STOP_MAX_DD,
+        EMERGENT_STOP_COOLDOWN_D=EMERGENT_STOP_COOLDOWN_D,
+        EMERGENT_STOP_LOG=EMERGENT_STOP_LOG,
+        EMERGENT_STOP_LOG_EVERY_D=EMERGENT_STOP_LOG_EVERY_D,
         STAR_LOOKBACK_D=STAR_LOOKBACK_D,
         STAR_RS_THRESH_PCT=STAR_RS_THRESH_PCT,
         STAR_SUSTAIN_FRAC=STAR_SUSTAIN_FRAC,
+        TREND_LOG=TREND_LOG,
+        TREND_LOG_EVERY_D=TREND_LOG_EVERY_D,
+        STAR_LOG=STAR_LOG,
+        STAR_LOG_EVERY_D=STAR_LOG_EVERY_D,
+        STAR_REBALANCE_FREQ_D=STAR_REBALANCE_FREQ_D,
+        STAR_LONG_BUDGET=STAR_LONG_BUDGET,
+        STAR_SHORT_BUDGET=STAR_SHORT_BUDGET,
         UNPRED_CORR_MAX=UNPRED_CORR_MAX,
         UNPRED_ADX_MAX_PCT=UNPRED_ADX_MAX_PCT,
         RS_LONG_EXTREME_PCT=RS_LONG_EXTREME_PCT,

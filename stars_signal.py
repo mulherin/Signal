@@ -1,22 +1,94 @@
+# stars_signal.py
 from typing import Tuple, Dict, List
 import numpy as np
 import pandas as pd
+from datetime import datetime
+
 from config import Config
+from utils import demean_within_groups
+from data_loader import load_industry_map
+
+
+def _dbg(cfg: Config) -> bool:
+    return bool(getattr(cfg, "STARS_LOG", False))
+
+def _log(cfg: Config, msg: str) -> None:
+    if _dbg(cfg):
+        ts = datetime.now().strftime("%H:%M:%S")
+        print(f"[{ts}] [stars] {msg}", flush=True)
+
 
 def compute_stars_time_series(RS_pct: pd.DataFrame, cfg: Config) -> pd.DataFrame:
-    look = cfg.STAR_LOOKBACK_D
-    thr = cfg.STAR_RS_THRESH_PCT
+    """
+    Stars with sustained RS + (optional) industry-uniqueness confirmation.
+
+    - Base: Star-Long if share of last STAR_LOOKBACK_D days with RS_pct >= STAR_RS_THRESH_PCT
+            exceeds STAR_SUSTAIN_FRAC (and analogously for Star-Short).
+    - Industry confirm (optional, soft):
+        Long side: fraction of days name's RS_pct >= industry-mean RS_pct exceeds STAR_INDUSTRY_CONFIRM_FRAC
+        Short side: fraction of days name's RS_pct <= industry-mean RS_pct - STAR_INDUSTRY_MARGIN exceeds STAR_INDUSTRY_CONFIRM_FRAC
+    """
+    look = int(cfg.STAR_LOOKBACK_D)
+    thr  = float(cfg.STAR_RS_THRESH_PCT)
+
     rs = RS_pct.copy()
-    long_share = (rs >= thr).rolling(window=look, min_periods=look).mean()
+
+    # sustained RS shares
+    long_share  = (rs >= thr).rolling(window=look, min_periods=look).mean()
     short_share = (rs <= (1.0 - thr)).rolling(window=look, min_periods=look).mean()
+
+    # optional industry confirmation
+    use_ind = bool(getattr(cfg, "STAR_USE_INDUSTRY_CONFIRM", True))  # default ON for stars
+    ind_frac = float(getattr(cfg, "STAR_INDUSTRY_CONFIRM_FRAC", 0.55))
+    ind_margin = float(getattr(cfg, "STAR_INDUSTRY_MARGIN", 0.0))
+
+    if use_ind:
+        ind_map = load_industry_map(cfg.TREND_INPUT_PATH)
+        if ind_map is None or ind_map.empty:
+            _log(cfg, "industry map not found → disabling industry confirm for stars.")
+            use_ind = False
+        else:
+            ind_map = ind_map.reindex(rs.columns).fillna(pd.Series(range(len(rs.columns)), index=rs.columns))
+
+    if use_ind:
+        # industry-demeaned RS each day
+        ind_demeaned = rs.apply(lambda row: demean_within_groups(row, ind_map), axis=1)
+
+        # fraction of lookback with industry-beating (or lagging) RS
+        ind_long_share  = (ind_demeaned >= ind_margin).rolling(window=look, min_periods=look).mean()
+        ind_short_share = (ind_demeaned <= -ind_margin).rolling(window=look, min_periods=look).mean()
+    else:
+        ind_long_share  = pd.DataFrame(1.0, index=rs.index, columns=rs.columns)
+        ind_short_share = pd.DataFrame(1.0, index=rs.index, columns=rs.columns)
+
+    # labels
     label = pd.DataFrame("", index=rs.index, columns=rs.columns)
-    label[(long_share >= cfg.STAR_SUSTAIN_FRAC)] = "Star-Long"
-    label[(short_share >= cfg.STAR_SUSTAIN_FRAC)] = "Star-Short"
+
+    cond_L = (long_share  >= float(cfg.STAR_SUSTAIN_FRAC)) & (ind_long_share  >= ind_frac)
+    cond_S = (short_share >= float(cfg.STAR_SUSTAIN_FRAC)) & (ind_short_share >= ind_frac)
+
+    label[cond_L] = "Star-Long"
+    label[cond_S] = "Star-Short"
+
+    # lightweight sanity logging
+    if _dbg(cfg):
+        every = max(1, int(getattr(cfg, "STARS_LOG_EVERY_D", 20)))
+        for i, t in enumerate(label.index):
+            if (i % every) != 0:
+                continue
+            N = int(rs.iloc[i].notna().sum())
+            nL = int(cond_L.iloc[i].sum())
+            nS = int(cond_S.iloc[i].sum())
+            _log(cfg, f"{t.date()} sanity N={N} Star-Long={nL} Star-Short={nS} "
+                      f"use_ind={use_ind} look={look} thr={thr:.2f}")
+
     return label
+
 
 def compute_stars_daily(star_ts: pd.DataFrame) -> pd.Series:
     last = star_ts.index[-1]
     return star_ts.loc[last].fillna("")
+
 
 def backtest_stars(resid: pd.DataFrame, star_ts: pd.DataFrame) -> Tuple[pd.Series, Dict[str, float]]:
     """
@@ -51,7 +123,7 @@ def backtest_stars(resid: pd.DataFrame, star_ts: pd.DataFrame) -> Tuple[pd.Serie
     eq = (1.0 + port).cumprod()
     dd = (eq / eq.cummax()) - 1.0
 
-    # Trade-level episodes (unchanged)
+    # Trade-level stats (unchanged)
     trade_pnl_signed: List[float] = []
     for c in cols:
         lab = star_ts[c].fillna("")
@@ -59,18 +131,18 @@ def backtest_stars(resid: pd.DataFrame, star_ts: pd.DataFrame) -> Tuple[pd.Serie
         while i < len(lab):
             if lab.iloc[i] == "Star-Long":
                 j = i
-                while j+1 < len(lab) and lab.iloc[j+1] == "Star-Long":
+                while j + 1 < len(lab) and lab.iloc[j + 1] == "Star-Long":
                     j += 1
-                ret = float(resid[c].iloc[i+1:j+1].sum()) if j >= i+1 else 0.0
-                trade_pnl_signed.append(ret)  # long wins if >0
+                ret = float(resid[c].iloc[i + 1:j + 1].sum()) if j >= i + 1 else 0.0
+                trade_pnl_signed.append(ret)  # long wins if > 0
                 i = j + 1
                 continue
             if lab.iloc[i] == "Star-Short":
                 j = i
-                while j+1 < len(lab) and lab.iloc[j+1] == "Star-Short":
+                while j + 1 < len(lab) and lab.iloc[j + 1] == "Star-Short":
                     j += 1
-                ret = float(resid[c].iloc[i+1:j+1].sum()) if j >= i+1 else 0.0
-                trade_pnl_signed.append(-ret)  # short wins if >0
+                ret = float(resid[c].iloc[i + 1:j + 1].sum()) if j >= i + 1 else 0.0
+                trade_pnl_signed.append(-ret)  # short wins if > 0
                 i = j + 1
                 continue
             i += 1

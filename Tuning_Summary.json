@@ -1,0 +1,44 @@
+{
+  "Trend": {
+    "TREND_TSTAT_UP": 1.75,
+    "TREND_TSTAT_DOWN": 1.0,
+    "TREND_MIN_RSPCT": 0.4,
+    "TREND_USE_HYSTERESIS": false,
+    "TREND_REBALANCE_FREQ_D": 5,
+    "Sharpe_OOS_mean": 1.7334218374073949,
+    "Sharpe_OOS_median": 1.7234091635813125,
+    "MaxDD_OOS_median": -0.02284016722611515,
+    "Hold_Median_days": 22.0,
+    "Folds": 3
+  },
+  "Emergent": {
+    "DIR_ANCHOR_LONG_PCT": 0.65,
+    "DIR_ANCHOR_SHORT_PCT": 0.25,
+    "EMERGENT_LONG_CROSS_MARGIN": 0.07,
+    "EMERGENT_SHORT_CROSS_MARGIN": 0.04,
+    "EMERGENT_TSTAT_LEN_D": 84,
+    "EMERGENT_TSTAT_MIN_UP": 0.8,
+    "EMERGENT_TSTAT_MIN_DN": 0.7,
+    "EMERGENT_R2_MIN": 0.3,
+    "ACCEL_DELTA_MIN": 0.1,
+    "EMERGENT_USE_INDUSTRY_CONFIRM": false,
+    "EMERGENT_TTL_LONG_D": 32,
+    "EMERGENT_TTL_SHORT_D": 28,
+    "EMERGENT_COOLDOWN_D": 7,
+    "Sharpe_OOS_mean": 1.5774611099701008,
+    "Sharpe_OOS_median": -0.04255194682539136,
+    "MaxDD_OOS_median": -0.0433981253632158,
+    "Hold_Median_days": 27.75,
+    "Folds": 8
+  },
+  "Stars": {
+    "STAR_LOOKBACK_D": 252.0,
+    "STAR_RS_THRESH_PCT": 0.8,
+    "STAR_SUSTAIN_FRAC": 0.6,
+    "Sharpe_OOS_mean": 0.8302460808375308,
+    "Sharpe_OOS_median": 0.6218195582308597,
+    "MaxDD_OOS_median": -0.05524001768416309,
+    "Hold_Median_days": 55.5,
+    "Folds": 3.0
+  }
+}

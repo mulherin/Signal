@@ -1,327 +1,327 @@
 # config.py
-from dataclasses import dataclass
+# Streamlined, robust config loader for the Signals stack.
+# - Defaults input to: C:\Users\TaylorMulherin\Documents\Signals\Signals_Script\signals_input.xlsm
+# - Reads an optional "Config" sheet (two columns: Parameter | Value).
+# - Ignores TREND_INPUT_PATH overrides inside the sheet so the path cannot go stale.
+# - Robust coercers: tolerate TRUE/FALSE in numeric cells (maps to 1/0), skip blanks, ignore commented rows.
+
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Any, Dict, Optional, Union
+
+import numpy as np
 import pandas as pd
 
-@dataclass
+
+# ---------- Defaults ----------
+
+DEFAULT_INPUT_PATH = Path(
+    r"C:\Users\TaylorMulherin\Documents\Signals\Signals_Script\signals_input.xlsm"
+)
+
+
+@dataclass(frozen=True)
 class Config:
     # Paths
     TREND_INPUT_PATH: Path
-    VALUATION_WORKBOOK: Optional[Path]
-    VALUATION_SHEET: Optional[str]
-
-    # Residual model
-    BETA_FLOOR: float
-
-    # Feature lookbacks
-    RS_LOOKBACK_D: int
-    RS_SHORT_D: int
-    RS_LONG_D: int
-    RS_MED_LOOKBACK_D: int
-    ACCEL_LOOKBACK_D: int
-    ADX_LEN_D: int
-    ADX_ROC_LEN_D: int
-    VAL_WINDOW_Y_MAX: float
-    VAL_WINDOW_Y_MIN: float
-
-    # Emergent thresholds (directional anchors, accel size, cross margins)
-    DIR_ANCHOR_LONG_PCT: float
-    DIR_ANCHOR_SHORT_PCT: float
-    ACCEL_TOP_PCT: float
-    ACCEL_BOT_PCT: float
-    ACCEL_DELTA_MIN: float
-    EMERGENT_LONG_CROSS_MARGIN: float
-    EMERGENT_SHORT_CROSS_MARGIN: float
-        # Emergent stop (overlay)
-    EMERGENT_STOP_MAX_AGE_D: int
-    EMERGENT_STOP_MIN_LIFT: float
-    EMERGENT_STOP_MAX_DD: float
-    EMERGENT_STOP_COOLDOWN_D: int
-    # Emergent stop logging
-    EMERGENT_STOP_LOG: bool
-    EMERGENT_STOP_LOG_EVERY_D: int
-
-
-    # ADX (kept for compatibility; not used in emergent v2)
-    EMERGENT_ADX_ROC_PCTL_MIN: float
-    ADX_MIN_ROC: float
-
-    # Emergent trend-shape parameters (NEW)
-    EMERGENT_TSTAT_LEN_D: int
-    EMERGENT_TSTAT_MIN_UP: float
-    EMERGENT_TSTAT_MIN_DN: float
-    EMERGENT_R2_MIN: float
-
-    # Industry confirmation toggle (NEW)
-    EMERGENT_USE_INDUSTRY_CONFIRM: bool
-
-    # TTL and cooldown
-    EMERGENT_TTL_D: int
-    EMERGENT_TTL_LONG_D: int   # NEW (optional, falls back to EMERGENT_TTL_D)
-    EMERGENT_TTL_SHORT_D: int  # NEW (optional, falls back to EMERGENT_TTL_D)
-    EMERGENT_COOLDOWN_D: int
-
-    # RS floors (kept in config for compatibility; not used in emergent v2)
-    EMERGENT_LONG_RS_SHORT_MIN_PCT: float
-    EMERGENT_SHORT_RS_SHORT_FLOOR_PCT: float
-
-    # Emergent sleeve budgets
-    EMERGENT_LONG_BUDGET: float
-    EMERGENT_SHORT_BUDGET: float
-
-    # Emergent logging
-    EMERGENT_LOG: bool
-    EMERGENT_LOG_EVERY_D: int
-
-    # ---------------- Stars (unchanged) ----------------
-    STAR_LOOKBACK_D: int
-    STAR_RS_THRESH_PCT: float
-    STAR_SUSTAIN_FRAC: float
-    STAR_REBALANCE_FREQ_D: int
-    STAR_LONG_BUDGET: float
-    STAR_SHORT_BUDGET: float
-    # Optional logging
-    TREND_LOG: bool
-    TREND_LOG_EVERY_D: int
-    STAR_LOG: bool
-    STAR_LOG_EVERY_D: int
-
-
-    # ---------------- Unpredictable (unchanged) ----------------
-    UNPRED_CORR_MAX: float
-    UNPRED_ADX_MAX_PCT: float
-
-    # Warnings / reporting
-    RS_LONG_EXTREME_PCT: float
-    RS_SHORT_EXTREME_PCT: float
-    VAL_RICH_WARN_PCT: float
-    VAL_CHEAP_WARN_PCT: float
-
-    # Outputs
     OUTPUT_SIGNALS_PATH: Path
     OUTPUT_BACKTESTS_PATH: Path
+    VALUATION_WORKBOOK: Optional[Path] = None
+    VALUATION_SHEET: Optional[str] = None  # e.g., "Raw_EV"
 
-    # ---------------- Trend (minimal) ----------------
-    TREND_TSTAT_UP: float
-    TREND_TSTAT_DOWN: float
-    TREND_MIN_RSPCT: float
-    TREND_USE_HYSTERESIS: bool
-    TREND_REBALANCE_FREQ_D: int
-    TREND_LONG_BUDGET: float
-    TREND_SHORT_BUDGET: float
+    # Feature params
+    RS_LOOKBACK_D: int = 126
+    RS_MED_LOOKBACK_D: int = 126
+
+    # Unpredictable badge
+    UNPRED_CORR_MAX: float = 0.05
+
+    # Trend
+    TREND_TSTAT_LEN_D: int = 63
+    TREND_TSTAT_UP: float = 1.50
+    TREND_TSTAT_DOWN: float = 0.80
+    TREND_MIN_RSPCT: float = 0.50
+    TREND_R2_MIN: float = 0.15
+
+    TREND_USE_INDUSTRY_CONFIRM: bool = False
+    TREND_INDUSTRY_MARGIN: float = 0.00
+
+    TREND_USE_HYSTERESIS: bool = True
+    TREND_REBALANCE_FREQ_D: int = 5
+    TREND_LONG_BUDGET: float = 1.00
+    TREND_SHORT_BUDGET: float = 0.00
+
+    TREND_LOG: bool = False
+    TREND_LOG_EVERY_D: int = 20
+
+    # Emergent (k-day shock)
+    ADD_SHOCK_LEN_D: int = 5
+    ADD_SHOCK_Z_THR: float = 0.80
+    ADD_VOL_WIN_D: int = 60
+    ADD_TREND_GATE_LEN_D: int = 63
+    ADD_RS_FLOOR_LONG: float = 0.50
+    ADD_RS_CEIL_SHORT: float = 0.50
+    ADD_NEWS_SIGMA_MAX: float = 3.0
+
+    EMERGENT_REBALANCE_FREQ_D: int = 1
+    EMERGENT_LONG_BUDGET: float = 0.50
+    EMERGENT_SHORT_BUDGET: float = 0.50
+    EMERGENT_MIN_HOLD_D: int = 3  # NEW: carry an Emergent tag for at least N days
+
+    # Stars
+    STAR_LOOKBACK_D: int = 252
+    STAR_RS_THRESH_PCT: float = 0.65
+    STAR_SUSTAIN_FRAC: float = 0.65
+    STAR_USE_INDUSTRY_CONFIRM: bool = True
+    STAR_INDUSTRY_CONFIRM_FRAC: float = 0.55
+    STAR_INDUSTRY_MARGIN: float = 0.00
+
+    STARS_LOG: bool = False
+    STARS_LOG_EVERY_D: int = 20
+
+    # Reporting
+    VAL_RICH_WARN_PCT: float = 0.80
+    VAL_CHEAP_WARN_PCT: float = 0.20
 
 
-def _coerce_bool(x):
+# ---------- Coercers ----------
+
+def _is_blank(x: Any) -> bool:
+    if x is None:
+        return True
+    if isinstance(x, float) and np.isnan(x):
+        return True
+    s = str(x).strip()
+    return s == "" or s.lower() == "nan"
+
+
+def _coerce_bool(x: Any) -> bool:
+    if isinstance(x, bool):
+        return x
     s = str(x).strip().lower()
-    return s in ("1", "true", "yes", "y")
+    if s in ("1", "true", "t", "y", "yes", "on"):
+        return True
+    if s in ("0", "false", "f", "n", "no", "off"):
+        return False
+    raise ValueError(f"Expected bool-like, got: {x!r}")
 
-def _coerce_float(x, d):
-    try:
-        xs = str(x).strip()
-        return float(xs[:-1]) / 100.0 if xs.endswith("%") else float(xs)
-    except:
-        return d
 
-def _coerce_int(x, d):
-    try:
-        return int(float(x))
-    except:
-        return d
+def _coerce_int(x: Any) -> int:
+    if isinstance(x, (bool, np.bool_)):
+        return int(bool(x))
+    s = str(x).strip()
+    if s.lower() in ("true", "t", "yes", "on"):
+        return 1
+    if s.lower() in ("false", "f", "no", "off"):
+        return 0
+    return int(float(s))
 
-def _coerce_str(x, d):
-    try:
-        s = str(x)
-        return d if s.strip() == "" else s
-    except:
-        return d
 
-def _read_config_sheet(path: Path) -> Dict[str, object]:
+def _coerce_float(x: Any) -> float:
+    if isinstance(x, (bool, np.bool_)):
+        return 1.0 if bool(x) else 0.0
+    s = str(x).strip()
+    if s.endswith("%"):
+        # e.g., "65%"
+        return float(s[:-1]) / 100.0
+    if s.lower() in ("true", "t", "yes", "on"):
+        return 1.0
+    if s.lower() in ("false", "f", "no", "off"):
+        return 0.0
+    return float(s)
+
+
+def _coerce_path(x: Any, base: Path) -> Path:
+    if _is_blank(x):
+        # Caller may set None explicitly after coercion if needed
+        return base
+    p = Path(str(x).strip())
+    return p if p.is_absolute() else (base / p)
+
+
+# Map of key → coercer (do not include TREND_INPUT_PATH here)
+_COERCERS: Dict[str, Any] = {
+    # Paths
+    "OUTPUT_SIGNALS_PATH": _coerce_path,
+    "OUTPUT_BACKTESTS_PATH": _coerce_path,
+    "VALUATION_WORKBOOK": _coerce_path,
+    "VALUATION_SHEET": str,
+
+    # Ints
+    "RS_LOOKBACK_D": _coerce_int,
+    "RS_MED_LOOKBACK_D": _coerce_int,
+    "TREND_TSTAT_LEN_D": _coerce_int,
+    "TREND_REBALANCE_FREQ_D": _coerce_int,
+    "TREND_LOG_EVERY_D": _coerce_int,
+    "EMERGENT_REBALANCE_FREQ_D": _coerce_int,
+    "STAR_LOOKBACK_D": _coerce_int,
+    "STARS_LOG_EVERY_D": _coerce_int,
+    "EMERGENT_MIN_HOLD_D": _coerce_int,
+
+    # Floats
+    "UNPRED_CORR_MAX": _coerce_float,
+    "TREND_TSTAT_UP": _coerce_float,
+    "TREND_TSTAT_DOWN": _coerce_float,
+    "TREND_MIN_RSPCT": _coerce_float,
+    "TREND_R2_MIN": _coerce_float,
+    "TREND_INDUSTRY_MARGIN": _coerce_float,
+    "TREND_LONG_BUDGET": _coerce_float,
+    "TREND_SHORT_BUDGET": _coerce_float,
+    "ADD_SHOCK_LEN_D": _coerce_int,          # window length is an int
+    "ADD_SHOCK_Z_THR": _coerce_float,
+    "ADD_VOL_WIN_D": _coerce_int,
+    "ADD_TREND_GATE_LEN_D": _coerce_int,
+    "ADD_RS_FLOOR_LONG": _coerce_float,
+    "ADD_RS_CEIL_SHORT": _coerce_float,
+    "ADD_NEWS_SIGMA_MAX": _coerce_float,
+    "EMERGENT_LONG_BUDGET": _coerce_float,
+    "EMERGENT_SHORT_BUDGET": _coerce_float,
+    "STAR_RS_THRESH_PCT": _coerce_float,
+    "STAR_SUSTAIN_FRAC": _coerce_float,
+    "STAR_INDUSTRY_CONFIRM_FRAC": _coerce_float,
+    "STAR_INDUSTRY_MARGIN": _coerce_float,
+    "VAL_RICH_WARN_PCT": _coerce_float,
+    "VAL_CHEAP_WARN_PCT": _coerce_float,
+
+    # Bools
+    "TREND_USE_INDUSTRY_CONFIRM": _coerce_bool,
+    "TREND_USE_HYSTERESIS": _coerce_bool,
+    "TREND_LOG": _coerce_bool,
+    "STAR_USE_INDUSTRY_CONFIRM": _coerce_bool,
+    "STARS_LOG": _coerce_bool,
+}
+
+
+# ---------- Read "Config" sheet ----------
+
+def _read_config_sheet(xlsx_path: Path) -> Dict[str, Any]:
+    """
+    Read a 2-column 'Config' sheet (Parameter | Value).
+    - Skips blank keys, keys starting with '#', and entirely blank rows.
+    - Returns {KEY: value} with KEY uppercased and stripped.
+    """
     try:
-        df = pd.read_excel(path, sheet_name="Config")
-    except:
+        xl = pd.ExcelFile(xlsx_path)
+    except Exception:
         return {}
+
+    sheet_name = None
+    for cand in xl.sheet_names:
+        if str(cand).strip().lower() == "config":
+            sheet_name = cand
+            break
+    if sheet_name is None:
+        return {}
+
+    df = xl.parse(sheet_name)
     if df.shape[1] < 2:
         return {}
-    df.columns = [str(c).strip() for c in df.columns]
-    kc, vc = df.columns[0], df.columns[1]
-    out = {}
-    for _, r in df.iterrows():
-        k = str(r.get(kc, "")).strip()
-        if k and k.lower() != "nan":
-            out[k] = r.get(vc, "")
+
+    kcol, vcol = df.columns[:2]
+    out: Dict[str, Any] = {}
+    for _, row in df.iterrows():
+        key_raw = row[kcol]
+        val = row[vcol]
+        if _is_blank(key_raw):
+            continue
+        key = str(key_raw).strip()
+        if key.startswith("#"):
+            continue  # commented row
+        out[key.upper()] = val
     return out
 
-def load_config(trend_input_path: Optional[Path] = None) -> Config:
-    default_trend = Path("./Trend_Input.xlsm") if trend_input_path is None else Path(trend_input_path)
-    raw = _read_config_sheet(default_trend)
 
-    TREND_INPUT_PATH = Path(_coerce_str(raw.get("TREND_INPUT_PATH", str(default_trend)), str(default_trend)))
-    vw = _coerce_str(raw.get("VALUATION_WORKBOOK", ""), "")
-    VALUATION_WORKBOOK = Path(vw) if vw else None
-    VALUATION_SHEET = _coerce_str(raw.get("VALUATION_SHEET", "Raw_EV"), "Raw_EV")
+# ---------- Load + apply overrides ----------
 
-    BETA_FLOOR = _coerce_float(raw.get("BETA_FLOOR", 0.05), 0.05)
+def load_config(trend_input_path: Optional[Union[str, Path]] = None) -> Config:
+    """
+    Build Config:
+      1) Start from safe defaults.
+      2) Read 'Config' sheet and overlay overrides (except TREND_INPUT_PATH).
+      3) Ensure outputs live next to the input if not overridden.
+      4) Fallback to common filenames if the input path does not exist.
+    """
+    in_path = Path(trend_input_path) if trend_input_path else DEFAULT_INPUT_PATH
+    base_dir = in_path.parent
 
-    RS_LOOKBACK_D = _coerce_int(raw.get("RS_LOOKBACK_D", 126), 126)
-    RS_SHORT_D    = _coerce_int(raw.get("RS_SHORT_D", 21), 21)
-    RS_LONG_D     = _coerce_int(raw.get("RS_LONG_D", 126), 126)
-    RS_MED_LOOKBACK_D = _coerce_int(raw.get("RS_MED_LOOKBACK_D", RS_LOOKBACK_D), RS_LOOKBACK_D)
-    ACCEL_LOOKBACK_D = _coerce_int(raw.get("ACCEL_LOOKBACK_D", 63), 63)
-    ADX_LEN_D     = _coerce_int(raw.get("ADX_LEN_D", 20), 20)
-    ADX_ROC_LEN_D = _coerce_int(raw.get("ADX_ROC_LEN_D", 20), 20)
-    VAL_WINDOW_Y_MAX = _coerce_float(raw.get("VAL_WINDOW_Y_MAX", 3.0), 3.0)
-    VAL_WINDOW_Y_MIN = _coerce_float(raw.get("VAL_WINDOW_Y_MIN", 1.0), 1.0)
-
-    # Directional anchors
-    DIR_ANCHOR_LONG_PCT  = _coerce_float(raw.get("DIR_ANCHOR_LONG_PCT", 0.65), 0.65)
-    DIR_ANCHOR_SHORT_PCT = _coerce_float(raw.get("DIR_ANCHOR_SHORT_PCT", 0.30), 0.30)
-
-    # Acceleration and cross margins
-    ACCEL_TOP_PCT = _coerce_float(raw.get("ACCEL_TOP_PCT", 0.25), 0.25)
-    ACCEL_BOT_PCT = _coerce_float(raw.get("ACCEL_BOT_PCT", 0.25), 0.25)
-    ACCEL_DELTA_MIN = _coerce_float(raw.get("ACCEL_DELTA_MIN", 0.15), 0.15)
-    EMERGENT_LONG_CROSS_MARGIN  = _coerce_float(raw.get("EMERGENT_LONG_CROSS_MARGIN", 0.06), 0.06)
-    EMERGENT_SHORT_CROSS_MARGIN = _coerce_float(
-        raw.get("EMERGENT_SHORT_CROSS_MARGIN", raw.get("EMERGENT_LONG_CROSS_MARGIN", 0.06)), 0.06
+    cfg = Config(
+        TREND_INPUT_PATH=in_path,
+        OUTPUT_SIGNALS_PATH=base_dir / "Signals_Daily.xlsx",
+        OUTPUT_BACKTESTS_PATH=base_dir / "Backtests_Summary.xlsx",
+        VALUATION_WORKBOOK=None,
+        VALUATION_SHEET=None,
     )
 
-    # ADX ROC tail-based controls (kept for compatibility)
-    EMERGENT_ADX_ROC_PCTL_MIN = _coerce_float(raw.get("EMERGENT_ADX_ROC_PCTL_MIN", 0.65), 0.65)
-    ADX_MIN_ROC = _coerce_float(raw.get("ADX_MIN_ROC", 1.0), 1.0)
+    overrides_raw = _read_config_sheet(in_path)
 
-    # Emergent trend-shape (NEW)
-    EMERGENT_TSTAT_LEN_D   = _coerce_int(raw.get("EMERGENT_TSTAT_LEN_D", 63), 63)
-    EMERGENT_TSTAT_MIN_UP  = _coerce_float(raw.get("EMERGENT_TSTAT_MIN_UP", 0.5), 0.5)
-    EMERGENT_TSTAT_MIN_DN  = _coerce_float(raw.get("EMERGENT_TSTAT_MIN_DN", 0.7), 0.7)
-    EMERGENT_R2_MIN        = _coerce_float(raw.get("EMERGENT_R2_MIN", 0.15), 0.15)
+    # Aliases accepted in the sheet (keeps backward compatibility)
+    alias: Dict[str, str] = {
+        "STAR_LOG": "STARS_LOG",
+        "STAR_LOG_EVERY_D": "STARS_LOG_EVERY_D",
 
-    # Industry confirm toggle (NEW)
-    EMERGENT_USE_INDUSTRY_CONFIRM = _coerce_bool(raw.get("EMERGENT_USE_INDUSTRY_CONFIRM", True))
+        # ---- Emergent (compatibility aliases) ----
+        # Directional anchors → new RS floors/ceilings
+        "DIR_ANCHOR_LONG_PCT": "ADD_RS_FLOOR_LONG",
+        "DIR_ANCHOR_SHORT_PCT": "ADD_RS_CEIL_SHORT",
+        # Trend window for gate
+        "EMERGENT_TSTAT_LEN_D": "ADD_TREND_GATE_LEN_D",
+        # Accel delta (old) ≈ shock z-threshold (new)
+        "ACCEL_DELTA_MIN": "ADD_SHOCK_Z_THR",
+    }
 
-    # TTL and cooldown (with optional asym)
-    EMERGENT_TTL_D = _coerce_int(raw.get("EMERGENT_TTL_D", 28), 28)
-    EMERGENT_TTL_LONG_D = _coerce_int(raw.get("EMERGENT_TTL_LONG_D", raw.get("EMERGENT_TTL_D", 28)), 28)
-    EMERGENT_TTL_SHORT_D = _coerce_int(raw.get("EMERGENT_TTL_SHORT_D", raw.get("EMERGENT_TTL_D", 28)), 28)
-    EMERGENT_COOLDOWN_D = _coerce_int(raw.get("EMERGENT_COOLDOWN_D", 10), 10)
+    if overrides_raw:
+        for k_raw, v in overrides_raw.items():
+            key0 = str(k_raw).strip().upper()
+            if key0 == "TREND_INPUT_PATH":
+                # ignore sheet-level overrides for input path
+                continue
+            key = alias.get(key0, key0)
 
-    # RS floors (kept for compatibility; not used in emergent v2)
-    EMERGENT_LONG_RS_SHORT_MIN_PCT   = _coerce_float(raw.get("EMERGENT_LONG_RS_SHORT_MIN_PCT", 0.50), 0.50)
-    EMERGENT_SHORT_RS_SHORT_FLOOR_PCT = _coerce_float(raw.get("EMERGENT_SHORT_RS_SHORT_FLOOR_PCT", 0.25), 0.25)
+            # skip blanks
+            if _is_blank(v):
+                continue
 
-    # Emergent budgets
-    EMERGENT_LONG_BUDGET  = _coerce_float(raw.get("EMERGENT_LONG_BUDGET", 1.0), 1.0)
-    EMERGENT_SHORT_BUDGET = _coerce_float(raw.get("EMERGENT_SHORT_BUDGET", 0.0), 0.0)
+            # ignore unknown keys silently
+            if not hasattr(cfg, key):
+                continue
 
-    # Emergent logging
-    EMERGENT_LOG = _coerce_bool(raw.get("EMERGENT_LOG", False))
-    EMERGENT_LOG_EVERY_D = _coerce_int(raw.get("EMERGENT_LOG_EVERY_D", 21), 21)
+            coercer = _COERCERS.get(key, None)
+            try:
+                if coercer is None:
+                    # Fallback: set as string
+                    val = str(v).strip()
+                else:
+                    if coercer is _coerce_path:
+                        val = coercer(v, base=base_dir)
+                        # If this was a "path" field set blank, turn it into None cleanly
+                        if key in ("VALUATION_WORKBOOK",) and (val == base_dir):
+                            val = None
+                    else:
+                        val = coercer(v)
+                cfg = replace(cfg, **{key: val})
+            except Exception as e:
+                print(f"[config] warning: could not coerce value for {key}={v!r} ({e}); keeping default.", flush=True)
 
-    EMERGENT_STOP_MAX_AGE_D   = _coerce_int(raw.get("EMERGENT_STOP_MAX_AGE_D", 15), 15)
-    EMERGENT_STOP_MIN_LIFT    = _coerce_float(raw.get("EMERGENT_STOP_MIN_LIFT", 0.02), 0.02)
-    EMERGENT_STOP_MAX_DD      = _coerce_float(raw.get("EMERGENT_STOP_MAX_DD", 0.03), 0.03)
-    EMERGENT_STOP_COOLDOWN_D  = _coerce_int(raw.get("EMERGENT_STOP_COOLDOWN_D", 10), 10)
+    # Ensure TREND_INPUT_PATH exists, with fallbacks
+    if not cfg.TREND_INPUT_PATH.exists():
+        candidates = [
+            base_dir / "signals_input.xlsm",
+            base_dir / "signals_input.XLSM",
+            base_dir / "Trend_Input.xlsm",  # legacy fallback
+            base_dir / "Trend_Input.XLSM",
+        ]
+        for cand in candidates:
+            if cand.exists():
+                cfg = replace(cfg, TREND_INPUT_PATH=cand)
+                break
 
-    EMERGENT_STOP_LOG         = _coerce_bool(raw.get("EMERGENT_STOP_LOG", False))
-    EMERGENT_STOP_LOG_EVERY_D = _coerce_int(raw.get("EMERGENT_STOP_LOG_EVERY_D", 21), 21)
+    # Ensure outputs are set next to the (possibly corrected) input path
+    base_dir = cfg.TREND_INPUT_PATH.parent
+    if not cfg.OUTPUT_SIGNALS_PATH:
+        cfg = replace(cfg, OUTPUT_SIGNALS_PATH=base_dir / "Signals_Daily.xlsx")
+    if not cfg.OUTPUT_BACKTESTS_PATH:
+        cfg = replace(cfg, OUTPUT_BACKTESTS_PATH=base_dir / "Backtests_Summary.xlsx")
 
-
-    # Stars (unchanged)
-    STAR_LOOKBACK_D = _coerce_int(raw.get("STAR_LOOKBACK_D", 252), 252)
-    STAR_RS_THRESH_PCT = _coerce_float(raw.get("STAR_RS_THRESH_PCT", 0.70), 0.70)
-    STAR_SUSTAIN_FRAC = _coerce_float(raw.get("STAR_SUSTAIN_FRAC", 0.70), 0.70)
-    STAR_REBALANCE_FREQ_D = _coerce_int(raw.get("STAR_REBALANCE_FREQ_D", 5), 5)
-    STAR_LONG_BUDGET = _coerce_float(raw.get("STAR_LONG_BUDGET", 0.5), 0.5)
-    STAR_SHORT_BUDGET = _coerce_float(raw.get("STAR_SHORT_BUDGET", 0.5), 0.5)
-    # Trend/Stars logging toggles
-    TREND_LOG = _coerce_bool(raw.get("TREND_LOG", False))
-    TREND_LOG_EVERY_D = _coerce_int(raw.get("TREND_LOG_EVERY_D", 21), 21)
-    STAR_LOG = _coerce_bool(raw.get("STAR_LOG", False))
-    STAR_LOG_EVERY_D = _coerce_int(raw.get("STAR_LOG_EVERY_D", 21), 21)
-
-
-
-    # Unpredictable (unchanged)
-    UNPRED_CORR_MAX = _coerce_float(raw.get("UNPRED_CORR_MAX", 0.05), 0.05)
-    UNPRED_ADX_MAX_PCT = _coerce_float(raw.get("UNPRED_ADX_MAX_PCT", 0.40), 0.40)
-
-    # Warnings / reporting
-    RS_LONG_EXTREME_PCT = _coerce_float(raw.get("RS_LONG_EXTREME_PCT", 0.85), 0.85)
-    RS_SHORT_EXTREME_PCT = _coerce_float(raw.get("RS_SHORT_EXTREME_PCT", 0.15), 0.15)
-    VAL_RICH_WARN_PCT = _coerce_float(raw.get("VAL_RICH_WARN_PCT", 0.75), 0.75)
-    VAL_CHEAP_WARN_PCT = _coerce_float(raw.get("VAL_CHEAP_WARN_PCT", 0.25), 0.25)
-
-    # Outputs
-    OUTPUT_SIGNALS_PATH = Path(_coerce_str(raw.get("OUTPUT_SIGNALS_PATH", "Signals_Daily.xlsx"), "Signals_Daily.xlsx"))
-    OUTPUT_BACKTESTS_PATH = Path(_coerce_str(raw.get("OUTPUT_BACKTESTS_PATH", "Backtests_Summary.xlsx"), "Backtests_Summary.xlsx"))
-
-    return Config(
-        TREND_INPUT_PATH=TREND_INPUT_PATH,
-        VALUATION_WORKBOOK=VALUATION_WORKBOOK,
-        VALUATION_SHEET=VALUATION_SHEET,
-        BETA_FLOOR=BETA_FLOOR,
-        RS_LOOKBACK_D=RS_LOOKBACK_D,
-        RS_SHORT_D=RS_SHORT_D,
-        RS_LONG_D=RS_LONG_D,
-        RS_MED_LOOKBACK_D=RS_MED_LOOKBACK_D,
-        ACCEL_LOOKBACK_D=ACCEL_LOOKBACK_D,
-        ADX_LEN_D=ADX_LEN_D,
-        ADX_ROC_LEN_D=ADX_ROC_LEN_D,
-        VAL_WINDOW_Y_MAX=VAL_WINDOW_Y_MAX,
-        VAL_WINDOW_Y_MIN=VAL_WINDOW_Y_MIN,
-        DIR_ANCHOR_LONG_PCT=DIR_ANCHOR_LONG_PCT,
-        DIR_ANCHOR_SHORT_PCT=DIR_ANCHOR_SHORT_PCT,
-        ACCEL_TOP_PCT=ACCEL_TOP_PCT,
-        ACCEL_BOT_PCT=ACCEL_BOT_PCT,
-        ACCEL_DELTA_MIN=ACCEL_DELTA_MIN,
-        EMERGENT_LONG_CROSS_MARGIN=EMERGENT_LONG_CROSS_MARGIN,
-        EMERGENT_SHORT_CROSS_MARGIN=EMERGENT_SHORT_CROSS_MARGIN,
-        EMERGENT_ADX_ROC_PCTL_MIN=EMERGENT_ADX_ROC_PCTL_MIN,
-        ADX_MIN_ROC=ADX_MIN_ROC,
-        EMERGENT_TSTAT_LEN_D=EMERGENT_TSTAT_LEN_D,
-        EMERGENT_TSTAT_MIN_UP=EMERGENT_TSTAT_MIN_UP,
-        EMERGENT_TSTAT_MIN_DN=EMERGENT_TSTAT_MIN_DN,
-        EMERGENT_R2_MIN=EMERGENT_R2_MIN,
-        EMERGENT_USE_INDUSTRY_CONFIRM=EMERGENT_USE_INDUSTRY_CONFIRM,
-        EMERGENT_TTL_D=EMERGENT_TTL_D,
-        EMERGENT_TTL_LONG_D=EMERGENT_TTL_LONG_D,
-        EMERGENT_TTL_SHORT_D=EMERGENT_TTL_SHORT_D,
-        EMERGENT_COOLDOWN_D=EMERGENT_COOLDOWN_D,
-        EMERGENT_LONG_RS_SHORT_MIN_PCT=EMERGENT_LONG_RS_SHORT_MIN_PCT,
-        EMERGENT_SHORT_RS_SHORT_FLOOR_PCT=EMERGENT_SHORT_RS_SHORT_FLOOR_PCT,
-        EMERGENT_LONG_BUDGET=EMERGENT_LONG_BUDGET,
-        EMERGENT_SHORT_BUDGET=EMERGENT_SHORT_BUDGET,
-        EMERGENT_LOG=EMERGENT_LOG,
-        EMERGENT_LOG_EVERY_D=EMERGENT_LOG_EVERY_D,
-        EMERGENT_STOP_MAX_AGE_D=EMERGENT_STOP_MAX_AGE_D,
-        EMERGENT_STOP_MIN_LIFT=EMERGENT_STOP_MIN_LIFT,
-        EMERGENT_STOP_MAX_DD=EMERGENT_STOP_MAX_DD,
-        EMERGENT_STOP_COOLDOWN_D=EMERGENT_STOP_COOLDOWN_D,
-        EMERGENT_STOP_LOG=EMERGENT_STOP_LOG,
-        EMERGENT_STOP_LOG_EVERY_D=EMERGENT_STOP_LOG_EVERY_D,
-        STAR_LOOKBACK_D=STAR_LOOKBACK_D,
-        STAR_RS_THRESH_PCT=STAR_RS_THRESH_PCT,
-        STAR_SUSTAIN_FRAC=STAR_SUSTAIN_FRAC,
-        TREND_LOG=TREND_LOG,
-        TREND_LOG_EVERY_D=TREND_LOG_EVERY_D,
-        STAR_LOG=STAR_LOG,
-        STAR_LOG_EVERY_D=STAR_LOG_EVERY_D,
-        STAR_REBALANCE_FREQ_D=STAR_REBALANCE_FREQ_D,
-        STAR_LONG_BUDGET=STAR_LONG_BUDGET,
-        STAR_SHORT_BUDGET=STAR_SHORT_BUDGET,
-        UNPRED_CORR_MAX=UNPRED_CORR_MAX,
-        UNPRED_ADX_MAX_PCT=UNPRED_ADX_MAX_PCT,
-        RS_LONG_EXTREME_PCT=RS_LONG_EXTREME_PCT,
-        RS_SHORT_EXTREME_PCT=RS_SHORT_EXTREME_PCT,
-        VAL_RICH_WARN_PCT=VAL_RICH_WARN_PCT,
-        VAL_CHEAP_WARN_PCT=VAL_CHEAP_WARN_PCT,
-        OUTPUT_SIGNALS_PATH=OUTPUT_SIGNALS_PATH,
-        OUTPUT_BACKTESTS_PATH=OUTPUT_BACKTESTS_PATH,
-        TREND_TSTAT_UP=_coerce_float(raw.get("TREND_TSTAT_UP", 1.5), 1.5),
-        TREND_TSTAT_DOWN=_coerce_float(raw.get("TREND_TSTAT_DOWN", 0.8), 0.8),
-        TREND_MIN_RSPCT=_coerce_float(raw.get("TREND_MIN_RSPCT", 0.50), 0.50),
-        TREND_USE_HYSTERESIS=_coerce_bool(raw.get("TREND_USE_HYSTERESIS", False)),
-        TREND_REBALANCE_FREQ_D=_coerce_int(raw.get("TREND_REBALANCE_FREQ_D", 5), 5),
-        TREND_LONG_BUDGET=_coerce_float(raw.get("TREND_LONG_BUDGET", 0.5), 0.5),
-        TREND_SHORT_BUDGET=_coerce_float(raw.get("TREND_SHORT_BUDGET", 0.0), 0.0),
-    )
+    return cfg

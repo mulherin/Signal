@@ -1,84 +1,93 @@
-# New helpers added; existing functions untouched.
-from typing import Tuple, Optional
+# utils.py
+# Minimal helper utilities used across the streamlined Signals stack.
+# Removed ADX/ADX_ROC and other unused helpers.
+
+from __future__ import annotations
+
+from typing import Optional
 import numpy as np
 import pandas as pd
 
+
 def cross_sectional_percentile(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Row-wise percentiles (0..1) with NaNs preserved.
+    Ties receive average rank behavior (pandas default).
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(index=df.index if df is not None else None,
+                            columns=df.columns if df is not None else None,
+                            dtype=float)
     return df.rank(axis=1, pct=True)
 
+
 def residual_returns(prices: pd.DataFrame, betas: pd.Series) -> pd.DataFrame:
-    rets = np.log(prices).diff()
-    ew = rets.mean(axis=1)
-    beta_mat = pd.DataFrame(np.tile(betas.values, (len(rets), 1)), index=rets.index, columns=rets.columns)
-    resid = rets - beta_mat.mul(ew, axis=0)
+    """
+    Residual daily log returns:
+      r_it_resid = r_it - beta_i * r_mkt_t
+    where r_mkt_t is the equal-weighted cross-sectional return at t.
+
+    prices : wide DataFrame (dates x tickers), level-adjusted prices
+    betas  : Series indexed by tickers (same columns as prices); missing betas default to 1.0
+    """
+    if prices is None or prices.empty:
+        return pd.DataFrame(dtype=float)
+
+    rets = np.log(prices.astype(float)).diff()
+
+    # equal-weight market return each day
+    r_mkt = rets.mean(axis=1)
+
+    # align betas to columns, default 1.0 where missing
+    b = betas.reindex(rets.columns).fillna(1.0) if isinstance(betas, pd.Series) else pd.Series(1.0, index=rets.columns)
+
+    beta_mat = pd.DataFrame(np.tile(b.values, (len(rets), 1)),
+                            index=rets.index, columns=rets.columns)
+
+    resid = rets - beta_mat.mul(r_mkt, axis=0)
     return resid
 
+
 def residual_pseudo_price(resid: pd.DataFrame, base: float = 100.0) -> pd.DataFrame:
-    return np.exp(resid.fillna(0).cumsum()) * base
+    """
+    Pseudo-price from residual log returns (cumexp) with a fixed base.
+    """
+    if resid is None or resid.empty:
+        return pd.DataFrame(dtype=float)
+    return np.exp(resid.fillna(0.0).cumsum()) * float(base)
 
-def wilder_ema(x: pd.Series, n: int) -> pd.Series:
-    alpha = 1.0 / max(n, 1)
-    return x.ewm(alpha=alpha, adjust=False, min_periods=n).mean()
 
-def adx_close_only(series: pd.Series, n: int) -> pd.Series:
-    delta = series.diff()
-    up = delta.clip(lower=0.0).abs()
-    dn = (-delta).clip(lower=0.0).abs()
-    tr = delta.abs()
-    atr = wilder_ema(tr.fillna(0.0), n)
-    plus_di = 100.0 * (wilder_ema(up.fillna(0.0), n) / atr.replace(0, np.nan))
-    minus_di = 100.0 * (wilder_ema(dn.fillna(0.0), n) / atr.replace(0, np.nan))
-    dx = 100.0 * (plus_di - minus_di).abs() / (plus_di + minus_di)
-    adx = wilder_ema(dx.fillna(0.0), n)
-    return adx
-
-def within_name_trailing_percentile(series: pd.Series, window_days: int, min_days: int) -> pd.Series:
-    def _pct(x: np.ndarray) -> float:
-        last = x[-1]
-        return float(np.mean(x <= last))
-    return series.rolling(window=window_days, min_periods=min_days).apply(_pct, raw=True)
-
-def years_to_days(years: float) -> int:
-    return int(round(years * 252))
-
-# -------- NEW: cross-sectional zscore row-wise
-def cs_zscore(df: pd.DataFrame) -> pd.DataFrame:
-    mean = df.mean(axis=1)
-    std = df.std(axis=1, ddof=0).replace(0.0, np.nan)
-    return df.sub(mean, axis=0).div(std, axis=0).fillna(0.0)
-
-# -------- NEW: orthogonalize a score to a factor, return 0..1 percentiles
-def orthogonalize_to_factor(score: pd.DataFrame, factor: pd.DataFrame) -> pd.DataFrame:
-    s_z = cs_zscore(score)
-    f_z = cs_zscore(factor)
-    out = pd.DataFrame(index=score.index, columns=score.columns, dtype=float)
-    for t in score.index:
-        srow = s_z.loc[t]; frow = f_z.loc[t]
-        m = srow.notna() & frow.notna()
-        if m.sum() >= 3:
-            X = np.column_stack([np.ones(m.sum()), frow[m].values])
-            beta, *_ = np.linalg.lstsq(X, srow[m].values, rcond=None)
-            resid = np.full(len(srow), np.nan)
-            resid[m] = srow[m].values - X.dot(beta)
-            out.loc[t] = resid
-        else:
-            out.loc[t] = srow.values
-    return cross_sectional_percentile(out.fillna(0.0))
-
-# -------- NEW: current run-length of True (per column)
 def current_run_length(flag_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    For a boolean DataFrame, return the length (in days) of the current contiguous
+    True-run at each (date, ticker). Zeros where False.
+    """
+    if flag_df is None or flag_df.empty:
+        return pd.DataFrame(dtype=int)
+
     out = pd.DataFrame(0, index=flag_df.index, columns=flag_df.columns, dtype=int)
     for c in flag_df.columns:
         s = flag_df[c].fillna(False).astype(bool)
-        grp = (~s).cumsum()
-        run = s.groupby(grp).cumcount() + 1
+        grp = (~s).cumsum()                 # increments when s flips to False → new run id for True blocks
+        run = s.groupby(grp).cumcount() + 1 # counts within each True run
         run[~s] = 0
         out[c] = run.astype(int)
     return out
 
-# -------- NEW: demean within groups (e.g., industry)
+
 def demean_within_groups(w: pd.Series, groups: Optional[pd.Series]) -> pd.Series:
+    """
+    Demean a cross section (row) within provided groups (e.g., industry).
+    Any names with missing group labels are demeaned by the global mean.
+    """
+    if w is None or w.empty:
+        return w
     if groups is None or groups.empty:
         return w - w.mean()
-    aligned = groups.reindex(w.index)
-    return w - w.groupby(aligned).transform("mean")
+
+    g = groups.reindex(w.index)
+    # Compute group means for non-null groups
+    by = w.groupby(g, dropna=True).transform("mean")
+    # Fill entries whose group label is NaN with the global mean
+    by = by.fillna(w.mean())
+    return w - by

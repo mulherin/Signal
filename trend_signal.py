@@ -1,4 +1,14 @@
 # trend_signal.py
+# Streamlined Trend classification with NO ADX usage.
+# - Computes rolling slope, t-stat, and R² on log residual pseudo-price.
+# - Buckets names into Onside / Monitor / Offside using t-stat, RS percentile, and an R² floor.
+# - Optional industry confirmation and hysteresis to reduce label flip-flops.
+# - Provides a simple Score (t-stat pct + R²) and Score_for_weights (zeroed unless Onside).
+#
+# Public API:
+#   compute_trend_time_series(features, cfg) -> Dict[str, pd.DataFrame]
+#   backtest_trend(resid, trend_ts, cfg) -> Tuple[pd.Series, Dict[str, float]]
+
 from typing import Tuple, Dict
 import numpy as np
 import pandas as pd
@@ -6,7 +16,7 @@ from datetime import datetime
 
 from config import Config
 from utils import cross_sectional_percentile, demean_within_groups
-from data_loader import load_industry_map  # used only if industry confirm is enabled and not passed in externally
+from data_loader import load_industry_map  # only used if industry confirm is enabled
 
 
 # ---------------- helpers (debug printing) ----------------
@@ -25,7 +35,7 @@ def _log(cfg: Config, msg: str) -> None:
 def _rolling_slope_tstat_r2(series: pd.Series, window: int = 63) -> Tuple[pd.Series, pd.Series, pd.Series]:
     """
     Rolling OLS of log(pseudo-price) on time (0..n-1), over 'window' days.
-    Returns (slope, tstat, R2), each aligned to series.index.
+    Returns (slope, tstat, r2), each aligned to series.index.
     """
     y = np.log(np.maximum(series.astype(float).values, 1e-12))
     n = int(window)
@@ -64,18 +74,17 @@ def compute_trend_time_series(features: Dict[str, pd.DataFrame],
                               cfg: Config) -> Dict[str, pd.DataFrame]:
     """
     Trend with:
-      - 63d rolling OLS slope & t-stat on log(residual pseudo-price)
-      - Optional R² gate (TREND_R2_MIN)
+      - Rolling OLS slope & t-stat on log(residual pseudo-price) over TREND_TSTAT_LEN_D (default 63)
       - RS floor (TREND_MIN_RSPCT)
-      - Optional industry soft-confirm: name must be stronger than its industry (TREND_USE_INDUSTRY_CONFIRM)
-      - ADX is *not* a gate; it contributes weakly to the quality score only.
+      - Optional R² floor (TREND_R2_MIN; default 0.15)
+      - Optional industry soft-confirm: name stronger than its industry (TREND_USE_INDUSTRY_CONFIRM)
+      - NO ADX usage.
 
     Returns dict of DataFrames:
       { "Tstat", "Slope", "R2", "Score", "Score_for_weights", "Class" }
     """
     pseudo  = features["Pseudo"]       # residual pseudo-price
     RS_pct  = features["RS_pct"]       # cross-sectional RS percentile (0..1)
-    ADX     = features.get("ADX", None)
     window  = int(getattr(cfg, "TREND_TSTAT_LEN_D", 63))
 
     # 1) rolling regression metrics
@@ -90,19 +99,18 @@ def compute_trend_time_series(features: Dict[str, pd.DataFrame],
         tstat_df[c] = t
         r2_df[c]    = r2
 
-    # 2) quality score (R² preferred; ADX only weak)
-    tstat_pct = cross_sectional_percentile(tstat_df)
+    # 2) quality score (t-stat percentile + R²; NO ADX)
+    tstat_pct = cross_sectional_percentile(tstat_df).fillna(0.0)
     r2_clip   = r2_df.clip(lower=0.0, upper=1.0).fillna(0.0)
-    adx_pct   = cross_sectional_percentile(ADX) if ADX is not None else pd.DataFrame(0.0, index=pseudo.index, columns=pseudo.columns)
 
-    w_t, w_r2, w_adx = 0.70, 0.25, 0.05
-    score_df = (w_t * tstat_pct + w_r2 * r2_clip + w_adx * adx_pct) / (w_t + w_r2 + w_adx)
+    w_t, w_r2 = 0.75, 0.25
+    score_df = (w_t * tstat_pct + w_r2 * r2_clip) / (w_t + w_r2)
 
     # 3) label classification
     on_thr    = float(cfg.TREND_TSTAT_UP)
     down_thr  = float(cfg.TREND_TSTAT_DOWN)
     rspct_thr = float(cfg.TREND_MIN_RSPCT)
-    r2_min    = float(getattr(cfg, "TREND_R2_MIN", 0.15))  # default R² floor; set to 0 to disable
+    r2_min    = float(getattr(cfg, "TREND_R2_MIN", 0.15))  # set to 0.0 to disable
 
     Class = pd.DataFrame("Offside", index=tstat_df.index, columns=tstat_df.columns, dtype=object)
 
@@ -127,9 +135,9 @@ def compute_trend_time_series(features: Dict[str, pd.DataFrame],
         ind_ok_long  = pd.DataFrame(True, index=RS_pct.index, columns=RS_pct.columns)
 
     # 3b) raw gates
-    cond_t = (tstat_df >= on_thr)
-    cond_rs = (RS_pct >= rspct_thr)
-    cond_r2 = (r2_clip >= r2_min)
+    cond_t  = (tstat_df >= on_thr)
+    cond_rs = (RS_pct   >= rspct_thr)
+    cond_r2 = (r2_clip  >= r2_min)
 
     # "Onside" requires all: strong t-stat + RS + R² + (optionally) industry-uniqueness
     cond_on = cond_t & cond_rs & cond_r2 & ind_ok_long
@@ -175,9 +183,7 @@ def compute_trend_time_series(features: Dict[str, pd.DataFrame],
             r2_row = r2_df.iloc[i].dropna()
             q_ts = np.quantile(ts_row, [0.25, 0.5, 0.75]).tolist() if len(ts_row) else [np.nan]*3
             q_r2 = np.quantile(r2_row, [0.25, 0.5, 0.75]).tolist() if len(r2_row) else [np.nan]*3
-            ind_cnt = int(ind_ok_long.iloc[i].sum()) if use_ind else on_cnt
             _log(cfg, f"{t.date()} sanity N={N} Onside={on_cnt} Monitor={mon_cnt} "
-                      f"ind_ok(L)={ind_cnt} "
                       f"tstat_q25/50/75={q_ts[0]:.2f}/{q_ts[1]:.2f}/{q_ts[2]:.2f} "
                       f"R2_q25/50/75={q_r2[0]:.2f}/{q_r2[1]:.2f}/{q_r2[2]:.2f}")
 

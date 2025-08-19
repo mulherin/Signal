@@ -48,8 +48,9 @@ def compute_emergent_time_series(RS_med_pct: pd.DataFrame,
     today_neg = resid < 0
     today_pos = resid > 0
 
-    buydip    = uptrend & (~news_bad) & (z <= -Z_THR) & today_neg
-    faderally = downtrend & (~news_bad) & (z >=  Z_THR) & today_pos
+    # Core signals (ungated): keep Trend/Class gating external in main/backtests
+    buydip    = (~news_bad) & (z <= -Z_THR) & today_neg
+    faderally = (~news_bad) & (z >=  Z_THR) & today_pos
 
     # Build labels
     State = pd.DataFrame("", index=dates, columns=names, dtype=object)

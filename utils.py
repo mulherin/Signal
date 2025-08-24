@@ -1,4 +1,3 @@
-# utils.py
 # Minimal helper utilities used across the streamlined Signals stack.
 # Removed ADX/ADX_ROC and other unused helpers.
 
@@ -20,6 +19,85 @@ def cross_sectional_percentile(df: pd.DataFrame) -> pd.DataFrame:
                             dtype=float)
     return df.rank(axis=1, pct=True)
 
+
+# ---------- NEW: groupwise percentiles ----------
+
+def percentile_within_groups(row: pd.Series,
+                             groups: Optional[pd.Series],
+                             min_group_size: int = 1,
+                             fallback: Optional[float] = None) -> pd.Series:
+    """
+    Percentile-rank a single cross section (one row) *within each group*.
+
+    Parameters
+    ----------
+    row : pd.Series
+        Cross section at a single date. Index are tickers. Values are numeric.
+    groups : pd.Series or None
+        Mapping ticker -> group label (e.g., industry). If None or empty, falls back to global percentile.
+        Missing group labels are treated as unique groups for their tickers.
+    min_group_size : int
+        If a group's total membership is < min_group_size, use a fallback for those tickers.
+        Default 1 means "always compute within-group percentiles."
+    fallback : Optional[float]
+        What to use for tickers in tiny groups:
+          - None (default): use the *global* cross-sectional percentile of `row`.
+          - float value (e.g., 0.5): use this constant.
+
+    Returns
+    -------
+    pd.Series of floats in [0,1], aligned to `row.index`. NaNs preserved where `row` is NaN.
+    """
+    if row is None or row.empty:
+        return pd.Series(index=(row.index if row is not None else None), dtype=float)
+
+    # No groups provided -> global percentile
+    if groups is None or groups.empty:
+        return row.rank(pct=True)
+
+    # Align groups to row and ensure missing labels become unique per ticker
+    g = groups.reindex(row.index)
+    if g.isna().any():
+        g = g.copy()
+        g[g.isna()] = g.index[g.isna()]  # each missing gets its own group id
+
+    # Base within-group percentile ranks (NaNs preserved)
+    within = row.groupby(g, dropna=False).rank(pct=True)
+
+    # Tiny-group fallback handling
+    if int(min_group_size) > 1:
+        # size per element's group
+        sizes = g.map(g.value_counts(dropna=False))
+        tiny_mask = (sizes < int(min_group_size)) & row.notna()
+
+        if tiny_mask.any():
+            if fallback is None:
+                global_pct = row.rank(pct=True)
+                within = within.where(~tiny_mask, global_pct)
+            else:
+                within = within.where(~tiny_mask, float(fallback))
+
+    return within.astype(float)
+
+
+def cross_sectional_percentile_within_groups(df: pd.DataFrame,
+                                             groups: Optional[pd.Series],
+                                             min_group_size: int = 1,
+                                             fallback: Optional[float] = None) -> pd.DataFrame:
+    """
+    Row-wise percentiles within groups for an entire DataFrame.
+    Applies `percentile_within_groups` to each date independently.
+
+    Parameters mirror `percentile_within_groups`.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(index=df.index if df is not None else None,
+                            columns=df.columns if df is not None else None,
+                            dtype=float)
+    return df.apply(lambda row: percentile_within_groups(row, groups, min_group_size, fallback), axis=1)
+
+
+# ---------- existing helpers (unchanged) ----------
 
 def residual_returns(prices: pd.DataFrame, betas: pd.Series) -> pd.DataFrame:
     """
@@ -68,7 +146,7 @@ def current_run_length(flag_df: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(0, index=flag_df.index, columns=flag_df.columns, dtype=int)
     for c in flag_df.columns:
         s = flag_df[c].fillna(False).astype(bool)
-        grp = (~s).cumsum()                 # increments when s flips to False → new run id for True blocks
+        grp = (~s).cumsum()                 # increments when s flips to False -> new run id for True blocks
         run = s.groupby(grp).cumcount() + 1 # counts within each True run
         run[~s] = 0
         out[c] = run.astype(int)

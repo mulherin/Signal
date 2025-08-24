@@ -1,4 +1,3 @@
-# config.py
 # Streamlined, robust config loader for the Signals stack.
 # - Defaults input to: C:\Users\TaylorMulherin\Documents\Signals\Signals_Script\signals_input.xlsm
 # - Reads an optional "Config" sheet (two columns: Parameter | Value).
@@ -38,7 +37,7 @@ class Config:
     # Unpredictable badge
     UNPRED_CORR_MAX: float = 0.05
 
-    # Trend
+    # Trend (global)
     TREND_TSTAT_LEN_D: int = 63
     TREND_TSTAT_UP: float = 1.50
     TREND_TSTAT_DOWN: float = 0.80
@@ -56,9 +55,13 @@ class Config:
     TREND_LOG: bool = False
     TREND_LOG_EVERY_D: int = 20
 
+    # Trend (industry-relative twin)
+    TREND_IND_ENABLED: bool = True
+    TREND_GROUP_MIN_SIZE: int = 3
+
     # Emergent (k-day shock)
     ADD_SHOCK_LEN_D: int = 5
-    ADD_SHOCK_Z_THR: float = 0.80
+    ADD_SHOCK_Z_THR: float = 1.25
     ADD_VOL_WIN_D: int = 60
     ADD_TREND_GATE_LEN_D: int = 63
     ADD_RS_FLOOR_LONG: float = 0.50
@@ -68,7 +71,22 @@ class Config:
     EMERGENT_REBALANCE_FREQ_D: int = 1
     EMERGENT_LONG_BUDGET: float = 0.50
     EMERGENT_SHORT_BUDGET: float = 0.50
-    EMERGENT_MIN_HOLD_D: int = 3  # NEW: carry an Emergent tag for at least N days
+    EMERGENT_MIN_HOLD_D: int = 3  # carry an Emergent tag for at least N days
+    EMERGENT_MAX_HOLD_D: int = 5          # new: cap carry to about a week
+    ADD_Z_RESET: float = 0.25             # new: re-arm threshold for edge triggers
+    ADD_RS_LOOKBACK_RECENT: int = 20      # new: lookback window for recent RS pulse
+    ADD_FADE_RS_MIN: float = 0.55         # new: require a recent RS high to allow FadeRally
+    # Emergent pulse guards
+    ADD_PULSE_FRESH_MAX_D: int = 3    # lookback for "fresh" daily pulse
+    ADD_FADE_1D_MIN: float = 0.60     # FadeRally requires a recent day with 1d rank >= this
+    ADD_BUY_1D_MAX: float = 0.40      # BuyDip requires a recent day with 1d rank <= this
+    EMERGENT_PULSE_LOOKBACK_D: int = 5
+    EMERGENT_FADE_TOP_PCT: float = 0.85
+    EMERGENT_BUY_BOT_PCT: float = 0.15
+    EMERGENT_KILL_LOOKBACK_D: int = 5
+    EMERGENT_MAX_HOLD_D: int = 5
+    EMERGENT_KILL_LOOKBACK_D: int = 5 
+
 
     # Stars
     STAR_LOOKBACK_D: int = 252
@@ -124,7 +142,6 @@ def _coerce_float(x: Any) -> float:
         return 1.0 if bool(x) else 0.0
     s = str(x).strip()
     if s.endswith("%"):
-        # e.g., "65%"
         return float(s[:-1]) / 100.0
     if s.lower() in ("true", "t", "yes", "on"):
         return 1.0
@@ -135,7 +152,6 @@ def _coerce_float(x: Any) -> float:
 
 def _coerce_path(x: Any, base: Path) -> Path:
     if _is_blank(x):
-        # Caller may set None explicitly after coercion if needed
         return base
     p = Path(str(x).strip())
     return p if p.is_absolute() else (base / p)
@@ -159,8 +175,15 @@ _COERCERS: Dict[str, Any] = {
     "STAR_LOOKBACK_D": _coerce_int,
     "STARS_LOG_EVERY_D": _coerce_int,
     "EMERGENT_MIN_HOLD_D": _coerce_int,
+    "TREND_GROUP_MIN_SIZE": _coerce_int,
+    "EMERGENT_MAX_HOLD_D": _coerce_int,
+    "ADD_RS_LOOKBACK_RECENT": _coerce_int,
+    "EMERGENT_KILL_LOOKBACK_D": _coerce_int,
+
 
     # Floats
+    "ADD_FADE_RS_MIN": _coerce_float,
+    "ADD_Z_RESET": _coerce_float,
     "UNPRED_CORR_MAX": _coerce_float,
     "TREND_TSTAT_UP": _coerce_float,
     "TREND_TSTAT_DOWN": _coerce_float,
@@ -169,7 +192,7 @@ _COERCERS: Dict[str, Any] = {
     "TREND_INDUSTRY_MARGIN": _coerce_float,
     "TREND_LONG_BUDGET": _coerce_float,
     "TREND_SHORT_BUDGET": _coerce_float,
-    "ADD_SHOCK_LEN_D": _coerce_int,          # window length is an int
+    "ADD_SHOCK_LEN_D": _coerce_int,
     "ADD_SHOCK_Z_THR": _coerce_float,
     "ADD_VOL_WIN_D": _coerce_int,
     "ADD_TREND_GATE_LEN_D": _coerce_int,
@@ -184,6 +207,15 @@ _COERCERS: Dict[str, Any] = {
     "STAR_INDUSTRY_MARGIN": _coerce_float,
     "VAL_RICH_WARN_PCT": _coerce_float,
     "VAL_CHEAP_WARN_PCT": _coerce_float,
+    "ADD_PULSE_FRESH_MAX_D": _coerce_int,
+    "ADD_FADE_1D_MIN": _coerce_float,
+    "ADD_BUY_1D_MAX": _coerce_float,
+    "EMERGENT_PULSE_LOOKBACK_D": _coerce_int,
+    "EMERGENT_FADE_TOP_PCT": _coerce_float,
+    "EMERGENT_BUY_BOT_PCT": _coerce_float,
+    "EMERGENT_MAX_HOLD_D": _coerce_int,
+    "EMERGENT_KILL_LOOKBACK_D": _coerce_int,
+   
 
     # Bools
     "TREND_USE_INDUSTRY_CONFIRM": _coerce_bool,
@@ -191,6 +223,7 @@ _COERCERS: Dict[str, Any] = {
     "TREND_LOG": _coerce_bool,
     "STAR_USE_INDUSTRY_CONFIRM": _coerce_bool,
     "STARS_LOG": _coerce_bool,
+    "TREND_IND_ENABLED": _coerce_bool,
 }
 
 
@@ -228,7 +261,7 @@ def _read_config_sheet(xlsx_path: Path) -> Dict[str, Any]:
             continue
         key = str(key_raw).strip()
         if key.startswith("#"):
-            continue  # commented row
+            continue
         out[key.upper()] = val
     return out
 
@@ -256,18 +289,15 @@ def load_config(trend_input_path: Optional[Union[str, Path]] = None) -> Config:
 
     overrides_raw = _read_config_sheet(in_path)
 
-    # Aliases accepted in the sheet (keeps backward compatibility)
+    # Aliases accepted in the sheet
     alias: Dict[str, str] = {
         "STAR_LOG": "STARS_LOG",
         "STAR_LOG_EVERY_D": "STARS_LOG_EVERY_D",
 
-        # ---- Emergent (compatibility aliases) ----
-        # Directional anchors → new RS floors/ceilings
+        # Emergent compatibility aliases
         "DIR_ANCHOR_LONG_PCT": "ADD_RS_FLOOR_LONG",
         "DIR_ANCHOR_SHORT_PCT": "ADD_RS_CEIL_SHORT",
-        # Trend window for gate
         "EMERGENT_TSTAT_LEN_D": "ADD_TREND_GATE_LEN_D",
-        # Accel delta (old) ≈ shock z-threshold (new)
         "ACCEL_DELTA_MIN": "ADD_SHOCK_Z_THR",
     }
 
@@ -275,27 +305,21 @@ def load_config(trend_input_path: Optional[Union[str, Path]] = None) -> Config:
         for k_raw, v in overrides_raw.items():
             key0 = str(k_raw).strip().upper()
             if key0 == "TREND_INPUT_PATH":
-                # ignore sheet-level overrides for input path
                 continue
             key = alias.get(key0, key0)
 
-            # skip blanks
             if _is_blank(v):
                 continue
-
-            # ignore unknown keys silently
             if not hasattr(cfg, key):
                 continue
 
             coercer = _COERCERS.get(key, None)
             try:
                 if coercer is None:
-                    # Fallback: set as string
                     val = str(v).strip()
                 else:
                     if coercer is _coerce_path:
                         val = coercer(v, base=base_dir)
-                        # If this was a "path" field set blank, turn it into None cleanly
                         if key in ("VALUATION_WORKBOOK",) and (val == base_dir):
                             val = None
                     else:
@@ -309,7 +333,7 @@ def load_config(trend_input_path: Optional[Union[str, Path]] = None) -> Config:
         candidates = [
             base_dir / "signals_input.xlsm",
             base_dir / "signals_input.XLSM",
-            base_dir / "Trend_Input.xlsm",  # legacy fallback
+            base_dir / "Trend_Input.xlsm",
             base_dir / "Trend_Input.XLSM",
         ]
         for cand in candidates:
@@ -317,7 +341,7 @@ def load_config(trend_input_path: Optional[Union[str, Path]] = None) -> Config:
                 cfg = replace(cfg, TREND_INPUT_PATH=cand)
                 break
 
-    # Ensure outputs are set next to the (possibly corrected) input path
+    # Ensure outputs are set next to the input path
     base_dir = cfg.TREND_INPUT_PATH.parent
     if not cfg.OUTPUT_SIGNALS_PATH:
         cfg = replace(cfg, OUTPUT_SIGNALS_PATH=base_dir / "Signals_Daily.xlsx")

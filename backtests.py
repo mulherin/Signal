@@ -18,47 +18,66 @@ from stars_signal import backtest_stars
 
 # --------------------- helpers ---------------------
 
+def _apply_recent_perf_kill(state: pd.DataFrame,
+                            resid: pd.DataFrame,
+                            lookback: int) -> pd.DataFrame:
+    """
+    Early-cancel overlay for backtests:
+      - 'FadeRally' → drop if last N-day residual sum <= 0
+      - 'BuyDip'    → drop if last N-day residual sum >= 0
+    """
+    if state is None or state.empty or resid is None or resid.empty:
+        return state
+    R = resid.reindex_like(state)
+    rrN = R.rolling(int(lookback), min_periods=int(lookback)).sum()
+    out = state.copy()
+    fade_kill = out.eq("FadeRally") & (rrN <= 0.0)
+    buy_kill  = out.eq("BuyDip")    & (rrN >= 0.0)
+    out[fade_kill | buy_kill] = ""
+    return out
+
 # --- add near other helpers in backtests.py ---
 def _apply_min_hold(state: pd.DataFrame,
                     trend_class: pd.DataFrame,
-                    min_hold: int) -> pd.DataFrame:
-    """
-    Carry each label for at least 'min_hold' days (inclusive of entry day),
-    but only while the Trend gate remains supportive:
-      - BuyDip requires Trend.Class == 'Onside'
-      - FadeRally requires Trend.Class == 'Offside'
-    """
-    if min_hold <= 1:
-        return state
+                    min_hold: int,
+                    max_hold: int = 0) -> pd.DataFrame:
+    if state is None or state.empty:
+        return pd.DataFrame("", index=(state.index if state is not None else None),
+                            columns=(state.columns if state is not None else None),
+                            dtype=object)
 
-    idx = state.index
-    cols = state.columns
+    idx, cols = state.index, state.columns
     out = pd.DataFrame("", index=idx, columns=cols, dtype=object)
 
     def _ok(tag: str, cls: str) -> bool:
         return (tag == "BuyDip" and cls == "Onside") or (tag == "FadeRally" and cls == "Offside")
 
+    min_hold = max(1, int(min_hold))
+    max_hold = int(max_hold or 0)
+
     for c in cols:
         cur = ""
-        days_left = 0  # days remaining *after today*; we set to (min_hold - 1) on entry
+        age = 0
         for t in idx:
             cls = str(trend_class.at[t, c]) if (t in trend_class.index and c in trend_class.columns) else ""
             trig = str(state.at[t, c]) if (t in state.index and c in state.columns) else ""
 
-            if trig and _ok(trig, cls):
-                # new entry (or refresh) → (min_hold) days including today
-                cur = trig
-                days_left = max(0, min_hold - 1)
-            elif days_left > 0 and _ok(cur, cls):
-                # continue carrying
-                days_left -= 1
-            else:
-                # drop if not allowed or persistence exhausted
+            if cur and not _ok(cur, cls):
                 cur = ""
-                days_left = 0
+                age = 0
+
+            if (not cur) and trig and _ok(trig, cls):
+                cur = trig
+                age = 1
+            elif cur:
+                age += 1
+                if max_hold > 0 and age > max_hold:
+                    cur = ""
+                    age = 0
 
             out.at[t, c] = cur
     return out
+
 
 def _normalize_emergent_labels(state: pd.DataFrame) -> pd.DataFrame:
     """
@@ -195,7 +214,12 @@ def run_all_backtests(features: Dict[str, pd.DataFrame],
 
     # NEW: enforce minimum hold
     min_hold = int(getattr(cfg, "EMERGENT_MIN_HOLD_D", 1))
-    gated_persist = _apply_min_hold(gated, trend_ts["Class"], min_hold)
+    max_hold = int(getattr(cfg, "EMERGENT_MAX_HOLD_D", 5))
+    gated_persist = _apply_min_hold(gated, trend_ts["Class"], min_hold, max_hold)
+
+    kill_look = int(getattr(cfg, "EMERGENT_KILL_LOOKBACK_D", 5))
+    gated_persist = _apply_recent_perf_kill(gated_persist, resid, kill_look)
+
 
     W_em = _weights_from_emergent_labels(gated_persist, cfg)
     eq_emergent, st_emergent = _portfolio_equity_from_weights(W_em, resid)
